@@ -1,10 +1,12 @@
 module Main exposing (..)
 
 import Browser
-import Html exposing (Attribute, Html, button, div, input, pre, text)
-import Html.Attributes exposing (..)
+import Html exposing (Attribute, Html, button, div, input, li, text, ul)
+import Html.Attributes exposing (placeholder, value)
 import Html.Events exposing (onClick, onInput)
 import Http
+import Json.Decode exposing (Decoder, field, list, map2, string)
+import List exposing (map)
 
 
 
@@ -27,7 +29,7 @@ main =
 type HttpStatus
     = Failure
     | Loading
-    | Success String
+    | Success (List Pull)
     | Idle
 
 
@@ -53,7 +55,7 @@ init _ =
 type Msg
     = Change String
     | ButtonClick
-    | GotText (Result Http.Error String)
+    | GotPulls (Result Http.Error (List Pull))
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -64,13 +66,22 @@ update msg model =
 
         ButtonClick ->
             ( { model | httpStatus = Loading }
-            , Http.get
-                { url = "https://elm-lang.org/assets/public-opinion.txt"
-                , expect = Http.expectString GotText
+            , Http.request
+                { method = "GET"
+                , headers =
+                    [ Http.header "Authorization" ("token " ++ model.content)
+                    , Http.header "Accept" "application/vnd.github.v3+json"
+                    , Http.header "Content-Type" "application/json"
+                    ]
+                , url = "https://api.github.com/search/issues?q=is:pr+author:senbeiman+org:xflagstudio&sort=created&order=asc"
+                , expect = Http.expectJson GotPulls pullsDecoder
+                , body = Http.emptyBody
+                , timeout = Nothing
+                , tracker = Nothing
                 }
             )
 
-        GotText result ->
+        GotPulls result ->
             case result of
                 Ok fullText ->
                     ( { model | httpStatus = Success fullText }, Cmd.none )
@@ -98,9 +109,28 @@ view model =
             Idle ->
                 text ""
 
-            Success fullText ->
-                pre [] [ text fullText ]
+            Success pulls ->
+                ul [] (map (\l -> li [] [ text (l.title ++ l.createdAt) ]) pulls)
         ]
+
+
+type alias Pull =
+    { title : String
+    , createdAt : String
+    }
+
+
+pullsDecoder : Decoder (List Pull)
+pullsDecoder =
+    field "items" (list testDecoder)
+
+
+testDecoder : Decoder Pull
+testDecoder =
+    map2
+        Pull
+        (field "title" string)
+        (field "created_at" string)
 
 
 
