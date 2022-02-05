@@ -5,8 +5,8 @@ import Html exposing (Attribute, Html, button, div, input, li, text, ul)
 import Html.Attributes exposing (placeholder, value)
 import Html.Events exposing (onClick, onInput)
 import Http
-import Json.Decode exposing (Decoder, field, list, map2, string)
-import List exposing (map)
+import Json.Decode exposing (Decoder, field, int, list, map3, string)
+import List
 
 
 
@@ -29,7 +29,8 @@ main =
 type HttpStatus
     = Failure
     | Loading
-    | Success (List Pull)
+    | PullsSuccess (List Pull)
+    | CommentsSuccess (List String)
     | Idle
 
 
@@ -56,6 +57,46 @@ type Msg
     = Change String
     | ButtonClick
     | GotPulls (Result Http.Error (List Pull))
+    | GotComments (Result Http.Error (List String))
+
+
+getPulls : String -> Cmd Msg
+getPulls pat =
+    Http.request
+        { method = "GET"
+        , headers =
+            [ Http.header "Authorization" ("token " ++ pat)
+            , Http.header "Accept" "application/vnd.github.v3+json"
+            , Http.header "Content-Type" "application/json"
+            ]
+        , url = "https://api.github.com/search/issues?q=is:pr+author:senbeiman+org:xflagstudio&sort=created&order=asc"
+        , expect = Http.expectJson GotPulls pullsDecoder
+        , body = Http.emptyBody
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+getComments : String -> Int -> Cmd Msg
+getComments pat pullNumber =
+    Http.request
+        { method = "GET"
+        , headers =
+            [ Http.header "Authorization" ("token " ++ pat)
+            , Http.header "Accept" "application/vnd.github.v3+json"
+            , Http.header "Content-Type" "application/json"
+            ]
+        , url = "https://api.github.com/repos/xflagstudio/fansta-api/pulls/" ++ String.fromInt pullNumber ++ "/comments"
+        , expect = Http.expectJson GotComments commentsDecoder
+        , body = Http.emptyBody
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+getCommentsFromPulls : String -> List Pull -> Cmd Msg
+getCommentsFromPulls pat pulls =
+    Cmd.batch (List.map (\p -> getComments pat p.number) pulls)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -66,25 +107,22 @@ update msg model =
 
         ButtonClick ->
             ( { model | httpStatus = Loading }
-            , Http.request
-                { method = "GET"
-                , headers =
-                    [ Http.header "Authorization" ("token " ++ model.content)
-                    , Http.header "Accept" "application/vnd.github.v3+json"
-                    , Http.header "Content-Type" "application/json"
-                    ]
-                , url = "https://api.github.com/search/issues?q=is:pr+author:senbeiman+org:xflagstudio&sort=created&order=asc"
-                , expect = Http.expectJson GotPulls pullsDecoder
-                , body = Http.emptyBody
-                , timeout = Nothing
-                , tracker = Nothing
-                }
+            , getPulls model.content
             )
 
         GotPulls result ->
             case result of
-                Ok fullText ->
-                    ( { model | httpStatus = Success fullText }, Cmd.none )
+                Ok pulls ->
+                    ( { model | httpStatus = PullsSuccess pulls }, getCommentsFromPulls model.content pulls )
+
+                Err _ ->
+                    ( { model | httpStatus = Failure }, Cmd.none )
+
+        -- TODO: link comments to pulls. needs to change type of model
+        GotComments result ->
+            case result of
+                Ok comments ->
+                    ( { model | httpStatus = CommentsSuccess comments }, Cmd.none )
 
                 Err _ ->
                     ( { model | httpStatus = Failure }, Cmd.none )
@@ -109,28 +147,39 @@ view model =
             Idle ->
                 text ""
 
-            Success pulls ->
-                ul [] (map (\l -> li [] [ text (l.title ++ l.createdAt) ]) pulls)
+            PullsSuccess pulls ->
+                ul [] (List.map (\l -> li [] [ text (l.title ++ l.createdAt) ]) pulls)
+
+            -- TODO: show comments linked with pulls
+            CommentsSuccess comments ->
+                ul [] (List.map (\l -> li [] [ text l ]) comments)
         ]
 
 
 type alias Pull =
     { title : String
     , createdAt : String
+    , number : Int
     }
 
 
 pullsDecoder : Decoder (List Pull)
 pullsDecoder =
-    field "items" (list testDecoder)
+    field "items"
+        (list
+            (map3
+                Pull
+                (field "title" string)
+                (field "created_at" string)
+                (field "number" int)
+            )
+        )
 
 
-testDecoder : Decoder Pull
-testDecoder =
-    map2
-        Pull
-        (field "title" string)
-        (field "created_at" string)
+commentsDecoder : Decoder (List String)
+commentsDecoder =
+    list
+        (field "body" string)
 
 
 
