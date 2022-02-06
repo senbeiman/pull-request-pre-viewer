@@ -1,7 +1,7 @@
 module Main exposing (..)
 
 import Browser
-import Html exposing (Attribute, Html, button, div, input, li, text, ul)
+import Html exposing (Html, button, div, input, li, text, ul)
 import Html.Attributes exposing (placeholder, value)
 import Html.Events exposing (onClick, onInput)
 import Http
@@ -34,16 +34,33 @@ type HttpStatus
     | Idle
 
 
+type alias Input =
+    { pat : String
+    , repositoryName : String
+    }
+
+
+type alias Pull =
+    { title : String
+    , createdAt : String
+    , number : Int
+    , comments : List String
+    }
+
+
 type alias Model =
-    { content : String
-    , httpStatus : HttpStatus
+    { input : Input
+    , pulls : List Pull
     }
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    ( { content = ""
-      , httpStatus = Idle
+    ( { input =
+            { pat = ""
+            , repositoryName = ""
+            }
+      , pulls = []
       }
     , Cmd.none
     )
@@ -56,7 +73,7 @@ init _ =
 type Msg
     = Change String
     | ButtonClick
-    | GotPulls (Result Http.Error (List Pull))
+    | GotPulls (Result Http.Error (List DecodedPull))
     | GotComments (Result Http.Error (List String))
 
 
@@ -94,38 +111,66 @@ getComments pat pullNumber =
         }
 
 
-getCommentsFromPulls : String -> List Pull -> Cmd Msg
+getCommentsFromPulls : String -> List DecodedPull -> Cmd Msg
 getCommentsFromPulls pat pulls =
     Cmd.batch (List.map (\p -> getComments pat p.number) pulls)
+
+
+updatePat : String -> Model -> Model
+updatePat newPat model =
+    let
+        input =
+            model.input
+
+        newInput =
+            { input | pat = newPat }
+    in
+    { model | input = newInput }
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        Change newContent ->
-            ( { model | content = newContent }, Cmd.none )
+        Change newPat ->
+            ( updatePat newPat model, Cmd.none )
 
         ButtonClick ->
-            ( { model | httpStatus = Loading }
-            , getPulls model.content
+            ( model
+            , getPulls model.input.pat
             )
 
         GotPulls result ->
             case result of
                 Ok pulls ->
-                    ( { model | httpStatus = PullsSuccess pulls }, getCommentsFromPulls model.content pulls )
+                    ( { model
+                        | pulls =
+                            List.foldr (::)
+                                model.pulls
+                                (List.map
+                                    (\p ->
+                                        { title = p.title
+                                        , createdAt = p.createdAt
+                                        , number = p.number
+                                        , comments = []
+                                        }
+                                    )
+                                    pulls
+                                )
+                      }
+                    , getCommentsFromPulls model.input.pat pulls
+                    )
 
                 Err _ ->
-                    ( { model | httpStatus = Failure }, Cmd.none )
+                    ( model, Cmd.none )
 
-        -- TODO: link comments to pulls. needs to change type of model
+        -- TODO: link comments to pulls. 
         GotComments result ->
             case result of
                 Ok comments ->
-                    ( { model | httpStatus = CommentsSuccess comments }, Cmd.none )
+                    ( { model | pulls = comments }, Cmd.none )
 
                 Err _ ->
-                    ( { model | httpStatus = Failure }, Cmd.none )
+                    ( model, Cmd.none )
 
 
 
@@ -135,40 +180,41 @@ update msg model =
 view : Model -> Html Msg
 view model =
     div []
-        [ input [ placeholder "your GitHub PAT", value model.content, onInput Change ] []
+        [ input [ placeholder "your GitHub PAT", value model.input.pat, onInput Change ] []
         , button [ onClick ButtonClick ] [ text "Get comments!" ]
-        , case model.httpStatus of
-            Failure ->
-                text "I was unable to load your comments."
+        , ul []
+            (List.map
+                (\p ->
+                    li []
+                        [ text (p.title ++ p.createdAt)
+                        , text
+                            (case List.head p.comments of
+                                Just comment ->
+                                    comment
 
-            Loading ->
-                text "Loading..."
-
-            Idle ->
-                text ""
-
-            PullsSuccess pulls ->
-                ul [] (List.map (\l -> li [] [ text (l.title ++ l.createdAt) ]) pulls)
-
-            -- TODO: show comments linked with pulls
-            CommentsSuccess comments ->
-                ul [] (List.map (\l -> li [] [ text l ]) comments)
+                                Maybe.Nothing ->
+                                    ""
+                            )
+                        ]
+                )
+                model.pulls
+            )
         ]
 
 
-type alias Pull =
+type alias DecodedPull =
     { title : String
     , createdAt : String
     , number : Int
     }
 
 
-pullsDecoder : Decoder (List Pull)
+pullsDecoder : Decoder (List DecodedPull)
 pullsDecoder =
     field "items"
         (list
             (map3
-                Pull
+                DecodedPull
                 (field "title" string)
                 (field "created_at" string)
                 (field "number" int)
